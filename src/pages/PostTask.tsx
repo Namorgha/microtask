@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -17,6 +17,7 @@ import { useEmailVerificationRequired } from "@/hooks/useEmailVerificationRequir
 import { LocationPicker } from "@/components/map/LocationPicker";
 import { cn } from "@/lib/utils";
 import { calculateTaskQuality } from "@/lib/qualityEngine";
+import { reverseGeocode } from "@/lib/geocode";
 import { QualityHints } from "@/components/quality/QualityHints";
 
 const taskSchema = z.object({
@@ -76,23 +77,73 @@ export default function PostTask() {
     images: images.map(() => "x"),
   });
 
+  // Address auto-fill: every time a point is chosen (map tap, pin drag, GPS),
+  // look up its street address and put it in the input. The user can still edit it.
+  const [resolvingAddress, setResolvingAddress] = useState(false);
+  const geocodeTimer = useRef<number>();
+  const geocodeAbort = useRef<AbortController>();
+
+  const fillAddressFrom = useCallback((lat: number, lng: number, { onlyIfEmpty = false } = {}) => {
+    window.clearTimeout(geocodeTimer.current);
+    geocodeAbort.current?.abort();
+    // Debounce: Nominatim allows 1 request/second, and pin drags fire quickly.
+    geocodeTimer.current = window.setTimeout(async () => {
+      const ctrl = new AbortController();
+      geocodeAbort.current = ctrl;
+      setResolvingAddress(true);
+      try {
+        const address = await reverseGeocode(lat, lng, ctrl.signal);
+        if (address && !ctrl.signal.aborted) {
+          setLocation((current) => (onlyIfEmpty && current.trim() ? current : address));
+        }
+      } catch {
+        /* network error or aborted: keep whatever the user has typed */
+      } finally {
+        if (!ctrl.signal.aborted) setResolvingAddress(false);
+      }
+    }, 600);
+  }, []);
+
+  useEffect(() => () => {
+    window.clearTimeout(geocodeTimer.current);
+    geocodeAbort.current?.abort();
+  }, []);
+
+  const pickPoint = useCallback((lat: number, lng: number) => {
+    setCoords({ lat, lng });
+    fillAddressFrom(lat, lng);
+  }, [fillAddressFrom]);
+
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+        (pos) => {
+          setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          fillAddressFrom(pos.coords.latitude, pos.coords.longitude, { onlyIfEmpty: true });
+        },
         () => {}
       );
     }
-  }, []);
+  }, [fillAddressFrom]);
 
+  const [locating, setLocating] = useState(false);
   const detectLocation = () => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      toast({ title: "Location isn't supported on this device", variant: "destructive" });
+      return;
+    }
+    setLocating(true);
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setLocating(false);
+        pickPoint(pos.coords.latitude, pos.coords.longitude);
         toast({ title: "Location updated" });
       },
-      () => toast({ title: "Could not get location", variant: "destructive" })
+      () => {
+        setLocating(false);
+        toast({ title: "Could not get location", description: "Allow location access, or tap the map to drop a pin.", variant: "destructive" });
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
     );
   };
 
@@ -332,15 +383,20 @@ export default function PostTask() {
                         onChange={(e) => setLocation(e.target.value)}
                         maxLength={200}
                       />
-                      <Button type="button" variant="ghost" size="icon" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={detectLocation} title="Detect my location">
-                        <LocateFixed className="h-4 w-4" />
+                      <Button type="button" variant="ghost" size="icon" className="absolute right-1 top-1/2 -translate-y-1/2" onClick={detectLocation} disabled={locating} title="Use my location" aria-label="Use my location">
+                        {locating ? <Loader2 className="h-4 w-4 animate-spin" /> : <LocateFixed className="h-4 w-4" />}
                       </Button>
                     </div>
                     <div className="flex items-center gap-1.5 text-xs">
-                      {coords ? (
+                      {resolvingAddress ? (
+                        <>
+                          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                          <span className="text-muted-foreground">Finding address…</span>
+                        </>
+                      ) : coords ? (
                         <>
                           <CheckCircle2 className="h-3.5 w-3.5 text-success" />
-                          <span className="text-success">GPS detected</span>
+                          <span className="text-success">Location set — tap the map or drag the pin to adjust</span>
                         </>
                       ) : (
                         <>
@@ -356,7 +412,7 @@ export default function PostTask() {
                       <LocationPicker
                         lat={coords?.lat ?? null}
                         lng={coords?.lng ?? null}
-                        onLocationChange={(lat, lng) => setCoords({ lat, lng })}
+                        onLocationChange={pickPoint}
                         height="240px"
                       />
                     </div>
