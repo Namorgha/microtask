@@ -24,6 +24,7 @@ import { VerifiedBadges } from "@/components/verification/VerifiedBadge";
 import { CategoryBadge } from "@/components/shared/CategoryBadge";
 import { TaskLocationMap } from "@/components/map/TaskLocationMap";
 import { cn } from "@/lib/utils";
+import { EditTaskDialog } from "@/components/tasks/EditTaskDialog";
 
 const statusSteps = ["open", "accepted", "funded", "in_progress", "completed", "paid"];
 const statusLabels: Record<string, string> = {
@@ -258,6 +259,10 @@ export default function TaskDetail() {
   const isPoster = user?.id === task.poster_id;
   const isDoer = user?.id === task.doer_id;
   const pendingApplications = applications?.filter((a: any) => a.status === "pending") || [];
+  // Mirrors the database rule: editable while open and nobody has requested it.
+  const canEdit =
+    isPoster && task.status === "open" && applications !== undefined &&
+    !applications.some((a: any) => a.status !== "rejected");
 
   // Deal confidence for the task
   const taskConfidence = calculateDealConfidence({
@@ -468,6 +473,13 @@ export default function TaskDetail() {
                         ? `${pendingApplications.length} request${pendingApplications.length > 1 ? "s" : ""} waiting for you below`
                         : "Your task is live — waiting for requests."}
                     </p>
+                    {canEdit ? (
+                      <EditTaskDialog task={task as any} />
+                    ) : (
+                      <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Lock className="h-3.5 w-3.5" /> Editing is locked once someone requests your task.
+                      </p>
+                    )}
                     <Button variant="outline" className="w-full gap-2" onClick={() => cancelMutation.mutate()} disabled={cancelMutation.isPending}>
                       <XCircle className="h-4 w-4" /> Cancel task
                     </Button>
